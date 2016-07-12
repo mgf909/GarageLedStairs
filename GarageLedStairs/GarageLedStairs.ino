@@ -30,7 +30,7 @@ aDD "pARTY mODE" TO RAMP UP AND DOWN RANDOMLY....
 
 
 
-#define MY_NODE_ID 11
+#define MY_NODE_ID 22
 #define MY_DEFAULT_TX_LED_PIN A2
 #define MY_DEFAULT_RX_LED_PIN A3
 #define MY_DEFAULT_ERR_LED_PIN A4
@@ -50,13 +50,16 @@ aDD "pARTY mODE" TO RAMP UP AND DOWN RANDOMLY....
 #define SN "Stairs Light"
 #define SV "1.1"
 #define CHILD_ID_LIGHT 1
-#define CHILD_ID_PIR 3
+#define CHILD_ID_PIR1 3
+#define CHILD_ID_PIR2 4
 
 
 
 #define LED_PIN 5                         // Arduino pin attached to MOSFET Gate pin
-#define DIGITAL_INPUT_SENSOR 3            // The digital input you attached your motion sensor.
-#define INTERRUPT DIGITAL_INPUT_SENSOR-2  // Usually the interrupt = pin -2 (on uno/nano anyway)
+#define PIR1_PIN 3            // The digital input you attached your motion sensor.
+#define PIR2_PIN 6						 //PIR number 2
+
+//#define INTERRUPT PIR1_PIN-2  // Usually the interrupt = pin -2 (on uno/nano anyway)
 #define LIGHT_SENSOR_ANALOG_PIN A0			// Analog pin with LDR connected.
 
 
@@ -68,8 +71,9 @@ int mode = 2;								//set light control to AUTO on startup
 int lastMode = 0;
 int lastLightLevel;
 boolean lastTripped = 0;
+boolean lastTrippedB = 0;
 
-int nightThreshold = 200;
+int nightThreshold = 200;					//The default LDR value below which the led will turn on - this can be overidden.
 
 int sendCounter = 0;
 int sendCount = 10000;						//How often to send the data
@@ -79,7 +83,8 @@ int sendCount = 10000;						//How often to send the data
 
 MyMessage lightMsg(CHILD_ID_LIGHT, V_LIGHT);
 //MyMessage dimmerMsg(CHILD_ID_LIGHT, V_DIMMER);
-MyMessage motionMsg(CHILD_ID_PIR, V_TRIPPED);
+MyMessage motionMsg1(CHILD_ID_PIR1, V_TRIPPED);
+MyMessage motionMsg2(CHILD_ID_PIR2, V_TRIPPED);
 MyMessage lightLevelMsg(CHILD_ID_LIGHT, V_LIGHT_LEVEL);
 
 
@@ -92,8 +97,9 @@ AnalogSmooth as100 = AnalogSmooth(100);
 
 void setup()
 {
-	pinMode(DIGITAL_INPUT_SENSOR, INPUT);      // sets the motion sensor digital pin as input
-	
+	pinMode(PIR1_PIN, INPUT);      // sets the motion sensor digital pin as input
+	pinMode(PIR2_PIN, INPUT);      // sets the motion sensor digital pin as input
+
 	Serial.println("Node ready to receive messages...");
 }
 
@@ -101,7 +107,8 @@ void setup()
 void presentation() {
 	// Register the LED Dimmable Light with the gateway
 	present(CHILD_ID_LIGHT, S_DIMMER);
-	present(CHILD_ID_PIR, S_MOTION);
+	present(CHILD_ID_PIR1, S_MOTION);
+	present(CHILD_ID_PIR2, S_MOTION);
 	present(CHILD_ID_LIGHT, S_LIGHT_LEVEL);
 	sendSketchInfo(SN, SV);
 }
@@ -114,50 +121,49 @@ void loop()
 	//create counter for periodic sending data
 	sendCounter++;
 	
+	
 
-	//get and smooth the LDR data
+//Read the light level and smooth the LDR data
 	float analogSmooth100 = as100.analogReadSmooth(LIGHT_SENSOR_ANALOG_PIN);
 	int luxValue = (int)analogSmooth100;
 	//Serial.println(luxValue); 
+	if ((sendCount == 500) || (sendCount == 1500)) Serial.println(luxValue);
 
-
+//Determine if its dark enough for the led to come on!
 	boolean isItNight = (luxValue < nightThreshold);
-		if (isItNight) Serial.println("Night");
+		//if (isItNight) Serial.println("its night");
 
 
 
+		
 
+// Read digital motion value
+	boolean tripped = digitalRead(PIR1_PIN) == HIGH;
+	boolean trippedB = digitalRead(PIR2_PIN) == HIGH;
 
-
-/*
-	int lightLevel = (1023 - analogRead(LIGHT_SENSOR_ANALOG_PIN)) / 10.23;
-	Serial.println(lightLevel);
-	if (lightLevel != lastLightLevel) {
-		//send(lightLevelMsg.set(lightLevel));
-		lastLightLevel = lightLevel;
-	}
-
-	*/
-
-
-	// Read digital motion value
-	boolean tripped = digitalRead(DIGITAL_INPUT_SENSOR) == HIGH;
-
-	//Serial.println(millis() - lastOnMillis);
+//Print out the current mode
 	if (lastMode != mode) {
 		Serial.println(mode);
 		lastMode = mode;
 	}
 
 
-	//Send Motion Detected to controller
+//Send Motion Detected to controller
 	if (lastTripped != tripped) {
-		send(motionMsg.set(tripped ? "1" : "0"));
+		Serial.println("motion detected");
+		send(motionMsg1.set(tripped ? "1" : "0"));
 		lastTripped = tripped;
 	}
 
+	//Send Motion Detected to controller
+	if (lastTrippedB != trippedB) {
+		Serial.println("motion detected on B");
+		send(motionMsg2.set(trippedB ? "1" : "0"));
+		lastTrippedB = trippedB;
+	}
 
-	//Send data such as mode and light level value periodically
+
+//Send data such as mode and light level value periodically
 	if (sendCounter == sendCount) {
 		Serial.println("SendingLuxValue");
 		send(lightLevelMsg.set(luxValue));
@@ -174,10 +180,10 @@ void loop()
 
 
 
-	//Logic section
+//Logic section
 	if (mode == 2) {
 		//Serial.println("Mode: NightTime AUTO ");
-		if ((tripped == 1) && (isItNight)) {
+		if ((tripped == 1 || trippedB == 1) && (isItNight)) {
 			fadeToLevel(100); //turn on the light
 			lastOnMillis = millis();
 		}
@@ -214,6 +220,16 @@ void receive(const MyMessage &message)
 		int lstate = atoi(message.data);
 		mode = lstate; ///set mode for use in logic
 	}
+
+	// get the lux value for determining night value. MQTT : mygateway1-in/11/1/1/0/24
+	if ((message.sensor == CHILD_ID_LIGHT) && (message.type == V_VAR1) && (message.getInt() >25)) {  // this desired value for the 
+			nightThreshold = (message.getInt()); // over-ride the default value
+			Serial.print("Night Threshold value received: ");
+			Serial.println(nightThreshold);
+
+		}
+
+
 
 }
 
